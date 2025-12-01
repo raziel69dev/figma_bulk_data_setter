@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+body { font-family: Inter,sans-serif; padding:16px; background:#fafafa;}
+.field {border:1px solid #ccc; padding:10px; margin-bottom:10px; border-radius:6px;}
+textarea {width:100%; height:60px; margin-top:4px;}
+button {padding:6px 10px; border-radius:6px; margin-top:6px;}
+</style>
+</head>
+<body>
+<h3>Settings</h3>
+<input id="componentLayer" placeholder="Component name"><br><br>
+<input id="targetFrame" placeholder="Frame name"><br><br>
+<div id="fieldsContainer"></div>
+<button id="addField">+ Add field</button>
+<button id="clearAll">Clear</button><br><br>
+<button id="generate">Start magic</button>
+
+<script>
+const container = document.getElementById('fieldsContainer');
+
+function addField(name='', type='text', values='') {
+  const div = document.createElement('div');
+  div.className = 'field';
+  div.innerHTML = `
+    <input placeholder="Layer name" class="fname" value="${name}">
+    <select class="ftype">
+      <option value="text" ${type==='text'?'selected':''}>text</option>
+      <option value="image" ${type==='image'?'selected':''}>image</option>
+    </select>
+    <textarea placeholder="Data (each on new line)" class="fvalues">${values}</textarea>
+    <button class="remove">–</button>
+  `;
+  div.querySelector('.remove').onclick = ()=>div.remove();
+  container.appendChild(div);
+}
+
+document.getElementById('addField').onclick = ()=>addField();
+document.getElementById('clearAll').onclick = ()=>container.innerHTML='';
+
+document.getElementById('generate').onclick = ()=>{
+  const fields = [];
+  container.querySelectorAll('.field').forEach(f=>{
+    const name = f.querySelector('.fname').value.trim();
+    const type = f.querySelector('.ftype').value;
+    const values = f.querySelector('.fvalues').value.split('\n').map(v=>v.trim());
+    if(name) fields.push({name,type,values});
+  });
+  parent.postMessage({pluginMessage:{
+    type:'apply-data',
+    fields,
+    componentLayer: document.getElementById('componentLayer').value.trim(),
+    targetFrame: document.getElementById('targetFrame').value.trim()
+  }},'*');
+}
+</script>
+</body>
+</html>

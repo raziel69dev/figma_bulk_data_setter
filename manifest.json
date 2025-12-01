@@ -1,0 +1,10 @@
+{
+  "name": "Batch Data Setter",
+  "id": "1577248627217349998",
+  "networkAccess": { "allowedDomains": ["http://localhost:3000"], "reasoning": "CORS DATA" },
+  "documentAccess": "dynamic-page",
+  "api": "1.0.0",
+  "editorType": ["figma"],
+  "main": "code.js",
+  "ui": "ui.html"
+}
