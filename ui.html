@@ -1,60 +1,285 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8" />
+<title>Auto Component Filler</title>
 <style>
-body { font-family: Inter,sans-serif; padding:16px; background:#fafafa;}
-.field {border:1px solid #ccc; padding:10px; margin-bottom:10px; border-radius:6px;}
-textarea {width:100%; height:60px; margin-top:4px;}
-button {padding:6px 10px; border-radius:6px; margin-top:6px;}
+  :root{font-family: Inter, system-ui, Arial, sans-serif;}
+  body{margin:0;padding:16px;box-sizing:border-box;width:760px;}
+  h2{margin:0 0 8px 0}
+  .row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
+  select,input,textarea,button{font:14px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;}
+  select,input{padding:6px;border:1px solid #ccc;border-radius:4px;}
+  textarea{width:100%;min-height:80px;padding:8px;border:1px solid #ccc;border-radius:4px;resize:vertical;}
+  .layer-row{display:flex;gap:8px;margin-bottom:6px;align-items:flex-start;}
+  .layer-row input[type="text"]{flex:1;min-width:120px;}
+  .layer-row select{width:100px;}
+  .layer-row textarea{flex:2;min-height:64px;}
+  .layer-row button{width:32px;height:32px;}
+  .grid-row{display:flex;gap:8px;margin-bottom:6px;align-items:center;}
+  .grid-row input{padding:6px;border:1px solid #ccc;border-radius:4px;}
+  .panel{margin-bottom:12px;padding:8px;border-radius:6px;background:#fbfbfb;border:1px solid #eee;}
+  .small{font-size:12px;color:#666}
+  #generateBtn{background:#0f62fe;color:white;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;}
+  #generateBtn[disabled]{opacity:0.5;cursor:not-allowed;}
+  .removeBtn{background:#ff4d4f;color:#fff;border:none;border-radius:4px;padding:6px 8px;cursor:pointer;}
 </style>
 </head>
 <body>
-<h3>Settings</h3>
-<input id="componentLayer" placeholder="Component name"><br><br>
-<input id="targetFrame" placeholder="Frame name"><br><br>
-<div id="fieldsContainer"></div>
-<button id="addField">+ Add field</button>
-<button id="clearAll">Clear</button><br><br>
-<button id="generate">Start magic</button>
+  <h2>Auto Component Filler</h2>
+
+  <!-- Component select -->
+  <div class="panel">
+    <div class="row">
+      <label style="width:110px">Component</label>
+      <select id="componentSelect"><option>Loading…</option></select>
+    </div>
+    <div class="small">Select a COMPONENT on the current page (not an Instance from a library).</div>
+  </div>
+
+  <!-- Layers mapping -->
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <strong>Layer mapping (Manual)</strong>
+      <div class="small">Each textarea: 1 line = 1 component</div>
+    </div>
+
+    <div id="layerMappingContainer"></div>
+    <div style="margin-top:8px">
+      <button id="addLayerRowBtn">+ Add layer</button>
+    </div>
+  </div>
+
+  <!-- Grid frames -->
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <strong>Grid frames</strong>
+      <div class="small" id="totalInfo">Total positions: 0</div>
+    </div>
+
+    <div id="gridContainer"></div>
+    <div style="margin-top:8px">
+      <button id="addGridBtn">+ Add frame</button>
+    </div>
+    <div class="small" style="margin-top:8px">
+      For each frame set how many positions to put into it. Last frame will receive remaining positions if left empty.
+    </div>
+  </div>
+
+  <!-- Control -->
+  <div style="display:flex;gap:12px;align-items:center;">
+    <button id="generateBtn" disabled>Generate</button>
+    <div class="small" id="proxyStatus">Proxy: Checking...</div>
+  </div>
 
 <script>
-const container = document.getElementById('fieldsContainer');
+/* UI logic */
 
-function addField(name='', type='text', values='') {
-  const div = document.createElement('div');
-  div.className = 'field';
-  div.innerHTML = `
-    <input placeholder="Layer name" class="fname" value="${name}">
-    <select class="ftype">
-      <option value="text" ${type==='text'?'selected':''}>text</option>
-      <option value="image" ${type==='image'?'selected':''}>image</option>
-    </select>
-    <textarea placeholder="Data (each on new line)" class="fvalues">${values}</textarea>
-    <button class="remove">–</button>
-  `;
-  div.querySelector('.remove').onclick = ()=>div.remove();
-  container.appendChild(div);
-}
+// Elements
+const componentSelect = document.getElementById('componentSelect');
+const layerMappingContainer = document.getElementById('layerMappingContainer');
+const addLayerRowBtn = document.getElementById('addLayerRowBtn');
+const gridContainer = document.getElementById('gridContainer');
+const addGridBtn = document.getElementById('addGridBtn');
+const generateBtn = document.getElementById('generateBtn');
+const proxyStatus = document.getElementById('proxyStatus');
+const totalInfo = document.getElementById('totalInfo');
 
-document.getElementById('addField').onclick = ()=>addField();
-document.getElementById('clearAll').onclick = ()=>container.innerHTML='';
+const proxyPingUrl = 'https://figma-proxy-mpbg.onrender.com/ping';
+let proxyOnline = false;
 
-document.getElementById('generate').onclick = ()=>{
-  const fields = [];
-  container.querySelectorAll('.field').forEach(f=>{
-    const name = f.querySelector('.fname').value.trim();
-    const type = f.querySelector('.ftype').value;
-    const values = f.querySelector('.fvalues').value.split('\n').map(v=>v.trim());
-    if(name) fields.push({name,type,values});
+// Receive messages from plugin
+window.onmessage = (e) => {
+  const msg = e.data.pluginMessage;
+  if (!msg) return;
+
+  if (msg.type === 'componentsList') {
+    populateComponents(msg.components);
+  } else if (msg.type === 'updateTotal') {
+    totalInfo.textContent = 'Total positions: ' + msg.total;
+  } else if (msg.type === 'proxyStatus') {
+    setProxyStatus(msg.status);
+  }
+};
+
+// populate component dropdown
+function populateComponents(list) {
+  componentSelect.innerHTML = '';
+  if (!list || !list.length) {
+    const opt = document.createElement('option');
+    opt.text = 'No components on page';
+    opt.value = '';
+    componentSelect.appendChild(opt);
+    return;
+  }
+  list.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.text = c.name;
+    componentSelect.appendChild(opt);
   });
-  parent.postMessage({pluginMessage:{
-    type:'apply-data',
-    fields,
-    componentLayer: document.getElementById('componentLayer').value.trim(),
-    targetFrame: document.getElementById('targetFrame').value.trim()
-  }},'*');
+  updateGenerateState();
 }
+
+// Layer row (layerName | type | textarea | remove)
+function addLayerRow(name = '', type = 'text', text = '') {
+  const row = document.createElement('div');
+  row.className = 'layer-row';
+
+  const inputName = document.createElement('input');
+  inputName.type = 'text';
+  inputName.placeholder = 'Layer name';
+  inputName.value = name;
+
+  const selectType = document.createElement('select');
+  const oText = document.createElement('option'); oText.value = 'text'; oText.text = 'Text';
+  const oImage = document.createElement('option'); oImage.value = 'image'; oImage.text = 'Image';
+  selectType.add(oText); selectType.add(oImage);
+  selectType.value = type;
+
+  const textarea = document.createElement('textarea');
+  textarea.placeholder = 'One line per component (press Enter)';
+  textarea.value = text;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'removeBtn';
+  removeBtn.textContent = '−';
+  removeBtn.onclick = () => { row.remove(); updateTotalPositions(); updateGenerateState(); };
+
+  // on input update totals
+  textarea.addEventListener('input', () => { updateTotalPositions(); updateGenerateState(); });
+  inputName.addEventListener('input', updateGenerateState);
+  selectType.addEventListener('change', updateGenerateState);
+
+  row.appendChild(inputName);
+  row.appendChild(selectType);
+  row.appendChild(textarea);
+  row.appendChild(removeBtn);
+  layerMappingContainer.appendChild(row);
+  updateTotalPositions();
+  updateGenerateState();
+  return row;
+}
+addLayerRow(); // default
+
+addLayerRowBtn.onclick = () => addLayerRow();
+
+// Grid rows
+function addGridRow(frameName = '', positions = '') {
+  const row = document.createElement('div');
+  row.className = 'grid-row';
+
+  const inputFrame = document.createElement('input');
+  inputFrame.type = 'text';
+  inputFrame.placeholder = 'Frame name';
+  inputFrame.value = frameName;
+
+  const inputPos = document.createElement('input');
+  inputPos.type = 'number';
+  inputPos.placeholder = 'Positions (leave empty = auto)';
+  inputPos.value = positions;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'removeBtn';
+  removeBtn.textContent = '−';
+  removeBtn.onclick = () => { row.remove(); updateGenerateState(); };
+
+  inputFrame.addEventListener('input', updateGenerateState);
+  inputPos.addEventListener('input', updateGenerateState);
+
+  row.appendChild(inputFrame);
+  row.appendChild(inputPos);
+  row.appendChild(removeBtn);
+  gridContainer.appendChild(row);
+  updateGenerateState();
+  return row;
+}
+addGridRow('Main',''); // default
+
+addGridBtn.onclick = () => addGridRow();
+
+// update total positions (max lines among textareas)
+function updateTotalPositions() {
+  const rows = Array.from(layerMappingContainer.querySelectorAll('.layer-row'));
+  if (!rows.length) {
+    postUpdateTotal(0);
+    return;
+  }
+  const max = Math.max(...rows.map(r => {
+    const lines = r.querySelector('textarea').value.split('\n').filter(l=>l.trim() !== '');
+    return lines.length;
+  }));
+  postUpdateTotal(max);
+}
+
+// send updateTotal to code (for UI display consistency)
+function postUpdateTotal(n) {
+  totalInfo.textContent = 'Total positions: ' + n;
+  parent.postMessage({ pluginMessage: { type: 'updateTotal', total: n } }, '*');
+}
+
+// build data payload from UI
+function buildManualData() {
+  const layerRows = Array.from(layerMappingContainer.querySelectorAll('.layer-row'));
+  const data = layerRows.map(r => {
+    const layerName = r.children[0].value.trim();
+    const type = r.children[1].value;
+    const values = r.children[2].value.split('\n').map(s=>s.trim());
+    return { layer: layerName, type, values };
+  });
+  return data;
+}
+
+// proxy check
+async function checkProxy() {
+  try {
+    const res = await fetch(proxyPingUrl, { method: 'GET' });
+    proxyOnline = res.ok;
+  } catch (e) {
+    proxyOnline = false;
+  }
+  setProxyStatus(proxyOnline ? 'Online' : 'Offline');
+  updateGenerateState();
+}
+function setProxyStatus(s) {
+  proxyStatus.textContent = 'Proxy: ' + s;
+  proxyOnline = (s === 'Online');
+  updateGenerateState();
+}
+
+// disable generate if no component or proxy offline
+function updateGenerateState() {
+  const compId = componentSelect.value;
+  const hasComp = !!compId;
+  const rows = Array.from(layerMappingContainer.querySelectorAll('.layer-row'));
+  const anyLayer = rows.length > 0;
+  // total positions > 0
+  const total = Math.max(...rows.map(r => r.querySelector('textarea').value.split('\n').filter(l=>l.trim()!=='').length), 0);
+  const can = hasComp && anyLayer && total > 0 && proxyOnline;
+  generateBtn.disabled = !can;
+}
+
+// Generate click
+generateBtn.onclick = () => {
+  const compId = componentSelect.value;
+  if (!compId) { alert('Select a component'); return; }
+
+  const grids = Array.from(gridContainer.querySelectorAll('.grid-row')).map(r => ({
+    name: r.children[0].value.trim(),
+    positions: r.children[1].value ? parseInt(r.children[1].value) : null
+  })).filter(g => g.name);
+
+  const data = buildManualData();
+  parent.postMessage({ pluginMessage: { type: 'manual-grid', data, grids, component: compId } }, '*');
+};
+
+// initial proxy check loop
+checkProxy();
+setInterval(checkProxy, 5000);
+
+// whoami: ask plugin to send components list on UI load
+parent.postMessage({ pluginMessage: { type: 'requestComponents' } }, '*');
+
 </script>
 </body>
 </html>

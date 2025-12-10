@@ -1,53 +1,148 @@
-figma.showUI(__html__, { width: 600, height: 600 });
+// main plugin code
+figma.showUI(__html__, { width: 760, height: 820 });
 
-
-const proxyUrl = 'https://figma-proxy-mpbg.onrender.com/image?url=';
-
+// When UI asks for components: respond with components from current page
 figma.ui.onmessage = async (msg) => {
-  if (msg.type === 'apply-data') {
-    const fields = msg.fields;
-    const componentName = msg.componentLayer;
-    const frameName = msg.targetFrame;
+  if (msg.type === 'requestComponents') {
+    // Ensure pages loaded
+    try {
+      await figma.loadAllPagesAsync();
+    } catch (e) {
+      console.warn('loadAllPagesAsync failed', e);
+    }
+    // Get components and component sets on current page
+    const comps = figma.currentPage.findAll(n => n.type === 'COMPONENT' || n.type === 'COMPONENT_SET');
+    const list = comps.map(c => ({ id: c.id, name: c.name }));
+    figma.ui.postMessage({ type: 'componentsList', components: list });
+    return;
+  }
 
-    const component = figma.currentPage.findOne(n => n.name === componentName);
-    const frame = figma.currentPage.findOne(n => n.name === frameName);
+  // Manual generation path
+  if (msg.type === 'manual-grid') {
+    const data = msg.data; // [{layer, type, values:[]}, ...]
+    const grids = msg.grids; // [{name, positions}]
+    const compId = msg.component;
+    const templateNode = figma.getNodeById(compId);
 
-    if (!component) return figma.notify('Component not found');
-    if (!frame) return figma.notify('Frame not found');
+    if (!templateNode) {
+      figma.notify('Component not found on page.');
+      return;
+    }
 
-    let maxRows = 0;
-    fields.forEach(f => { if(f.values) maxRows = Math.max(maxRows, f.values.length) });
+    // If user passed an instance or a component set, try to use createInstance if possible
+    const isComponent = templateNode.type === 'COMPONENT';
+    const isComponentSet = templateNode.type === 'COMPONENT_SET';
 
-    for (let i = 0; i < maxRows; i++) {
-      const clone = component.clone();
-      frame.appendChild(clone);
+    // determine maxLines (number of positions)
+    const maxLines = data.length ? Math.max(...data.map(d => d.values.length)) : 0;
+    figma.ui.postMessage({ type: 'updateTotal', total: maxLines });
 
-      for (let field of fields) {
-        const target = clone.findOne(n => n.name === field.name);
-        if (!target) continue;
+    let dataIndex = 0;
 
-        let value = (field.values[i] !== undefined && field.values[i] !== '') ? field.values[i] : 'EMPTY DATA, RE-CHECK';
+    for (let gi = 0; gi < grids.length; gi++) {
+      const grid = grids[gi];
+      const frameNode = figma.currentPage.findOne(n => n.type === 'FRAME' && n.name === grid.name);
 
-        if (field.type === 'text') {
-          if (target.type === 'TEXT') {
-            await figma.loadFontAsync(target.fontName);
-            target.characters = value;
+      if (!frameNode) {
+        figma.notify(`Frame "${grid.name}" not found on page — skipping`);
+        continue;
+      }
+
+      // how many to place in this frame
+      let count = grid.positions || Infinity;
+      // if last frame, take remaining
+      if (gi === grids.length - 1) {
+        count = Math.max(0, maxLines - dataIndex);
+      }
+
+      for (let i = 0; i < count && dataIndex < maxLines; i++, dataIndex++) {
+        // create instance of component
+        let clone;
+        try {
+          if (isComponent) {
+            clone = templateNode.createInstance();
+          } else if (isComponentSet) {
+            // if it's a component set, pick first child component to instance
+            const firstComp = templateNode.findOne(n => n.type === 'COMPONENT');
+            if (firstComp) clone = firstComp.createInstance();
+            else clone = templateNode.clone(); // fallback
+          } else {
+            // fallback: try clone
+            clone = templateNode.clone();
           }
-        } else if (field.type === 'image') {
-          if (target.fills) {
+        } catch (e) {
+          // fallback clone
+          clone = templateNode.clone();
+        }
+
+        // append into frame
+        frameNode.appendChild(clone);
+
+        // place vertically, avoid overlap: position at number of children before placing
+        const indexInFrame = frameNode.children.length - 1;
+        const yOffset = (clone.height || 0) * indexInFrame + (20 * indexInFrame);
+        clone.x = 0;
+        clone.y = yOffset;
+
+        // fill layers
+        for (const layerDef of data) {
+          const layerName = layerDef.layer;
+          const type = layerDef.type;
+          const values = layerDef.values;
+          const val = (values[dataIndex] !== undefined) ? values[dataIndex] : '';
+
+          if (!layerName) continue;
+          // find target inside clone (search by name)
+          const target = clone.findOne(n => n.name === layerName);
+          if (!target) continue;
+
+          // handle text
+          if (type === 'text' && target.type === 'TEXT') {
             try {
-              const res = await fetch(proxyUrl + encodeURIComponent(value));
-              const buffer = new Uint8Array(await res.arrayBuffer());
-              const image = figma.createImage(buffer);
-              target.fills = [{ type: 'IMAGE', scaleMode: 'FILL', imageHash: image.hash }];
-            } catch(e) {
-              console.error('Error image upload, check proxy server', e);
+              // load font; fontName may be object or string
+              const fn = target.fontName;
+              if (typeof fn === 'object') {
+                await figma.loadFontAsync(fn);
+              } else {
+                await figma.loadFontAsync(fn);
+              }
+            } catch (e) {
+              // font load failed — try generic fallback, but continue
+              console.warn('Font load failed for', target, e);
+            }
+            try {
+              target.characters = val || '';
+            } catch (e) {
+              console.warn('Failed to set text for', target.name, e);
             }
           }
-        }
-      }
-    }
-    figma.notify('Success!');
-    figma.closePlugin();
+
+          // handle image
+          else if (type === 'image' && 'fills' in target) {
+            if (!val || !val.startsWith('http')) {
+              // nothing to load — skip
+              continue;
+            }
+            try {
+              const proxyBase = 'https://figma-proxy-mpbg.onrender.com/?url=';
+              const proxyUrl = proxyBase + encodeURIComponent(val);
+              const res = await fetch(proxyUrl);
+              if (!res.ok) throw new Error('Image fetch failed: ' + res.status);
+              const arr = new Uint8Array(await res.arrayBuffer());
+              const imageHash = figma.createImage(arr).hash;
+              const newFills = [{ type: 'IMAGE', scaleMode: 'FILL', imageHash }];
+              target.fills = newFills;
+            } catch (e) {
+              console.warn('Failed to load image for', layerName, e);
+              // leave fills as-is
+            }
+          }
+        } // end fill layers
+      } // end count loop
+    } // end grids loop
+
+    figma.notify(`Generated ${maxLines} components`);
+    // select created nodes? we appended clones inside frames so let's select last created children across frames
+    // (skipped for simplicity)
   }
 };
